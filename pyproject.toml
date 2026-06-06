@@ -38,6 +38,7 @@ mcp = ["mcp>=1.0.0"]
 
 [project.scripts]
 file-desensitizer = "file_desensitizer.main:main"
+file-desensitizer-gui = "file_desensitizer.gui:main"
 
 [project.entry-points."mcp.servers"]
 file-desensitizer-mcp = "file_desensitizer.server:mcp"

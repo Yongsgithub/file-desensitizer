@@ -23,4 +23,5 @@ __all__ = [
     "process_file",
     "process_files",
     "TextDesensitizer",
+    "launch_gui",
 ]
