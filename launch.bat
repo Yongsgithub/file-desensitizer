@@ -1,14 +1,8 @@
 @echo off
 chcp 65001 >nul
-setlocal EnableDelayedExpansion
 
-:: ============================================================
-::  File Desensitizer - GUI Launcher (Windows)
-:: ============================================================
-
-echo.
 echo ============================================
-echo   File Desensitizer - Local Offline Tool
+echo   File Desensitizer - GUI Launcher
 echo ============================================
 echo.
 
@@ -17,7 +11,6 @@ python --version >nul 2>&1
 if %errorlevel% neq 0 (
     echo [ERROR] Python not found. Please install Python 3.10+
     echo Download: https://www.python.org/downloads/
-    echo Make sure to check "Add Python to PATH" during installation.
     pause
     exit /b 1
 )
@@ -39,12 +32,11 @@ where tesseract >nul 2>&1
 if %errorlevel% neq 0 (
     echo [WARN] Tesseract OCR not installed. Image desensitization will not work.
     echo Download: https://github.com/UB-Mannheim/tesseract/wiki
-    echo Make sure to check "Chinese (Simplified)" language pack during installation.
     echo.
 )
 
 :: Launch GUI
 echo [INFO] Launching GUI...
-start "" python -m file_desensitizer.gui
+python -c "from file_desensitizer.gui import main; main()"
 
-exit /b 0
+pause
