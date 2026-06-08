@@ -3,18 +3,16 @@
 文件脱敏 Skill 主入口
 
 支持对以下文件类型进行敏感信息脱敏：
-- 图片 (.png, .jpg, .jpeg, .bmp, .tiff, .webp)
 - Word 文档 (.docx)
 - PDF 文件 (.pdf)
+- 压缩包 (.zip)
 
 用法:
     python main.py <文件路径> [选项]
 
 选项:
     --output-dir <目录>    输出目录（默认为输入文件同目录）
-    --method <方式>         图片遮挡方式: black(默认)/blur/pixelate
     --pdf-mode <模式>       PDF处理模式: auto(默认)/text/image
-    --text-only             仅输出脱敏文本（图片处理时）
 """
 
 import sys
@@ -27,18 +25,12 @@ from .core import TextDesensitizer
 
 
 SUPPORTED_EXTENSIONS = {
-    # 图片
-    '.png': 'image',
-    '.jpg': 'image',
-    '.jpeg': 'image',
-    '.bmp': 'image',
-    '.tiff': 'image',
-    '.tif': 'image',
-    '.webp': 'image',
     # 文档
     '.docx': 'docx',
     # PDF
     '.pdf': 'pdf',
+    # 压缩包
+    '.zip': 'archive',
 }
 
 
@@ -75,15 +67,7 @@ def process_file(
             "input_path": file_path,
         }
 
-    if file_type == 'image':
-        from .image_processor import process_image
-        return process_image(
-            file_path,
-            output_dir=output_dir,
-            redact_method=kwargs.get('method', 'black'),
-            text_only=kwargs.get('text_only', False),
-        )
-    elif file_type == 'docx':
+    if file_type == 'docx':
         from .docx_processor import process_docx
         return process_docx(
             file_path,
@@ -96,6 +80,13 @@ def process_file(
             file_path,
             output_dir=output_dir,
             mode=kwargs.get('pdf_mode', 'auto'),
+        )
+    elif file_type == 'archive':
+        from .archive_processor import process_archive
+        return process_archive(
+            file_path,
+            output_dir=output_dir,
+            **kwargs,
         )
 
 
@@ -142,8 +133,9 @@ def print_help():
 ╔══════════════════════════════════════════════════════════╗
 ║            文件信息脱敏工具  File Desensitizer           ║
 ╠══════════════════════════════════════════════════════════╣
-║  支持类型: 图片(png/jpg/bmp/tiff/webp) | Word(docx) | PDF ║
+║  支持类型: Word(.docx) | PDF(.pdf) | 压缩包(.zip)       ║
 ║  脱敏内容: 姓名 | 手机号 | 身份证号 | 住址 | 邮箱 | 银行卡 ║
+║           学号 | 出生年月 | 户籍地址                    ║
 ╚══════════════════════════════════════════════════════════╝
 
 用法:
@@ -152,16 +144,14 @@ def print_help():
 
 选项:
     --output-dir <目录>    输出目录（默认为输入文件同目录）
-    --method <方式>         图片遮挡方式: black(默认) / blur / pixelate
     --pdf-mode <模式>       PDF处理模式: auto(默认) / text / image
-    --text-only             仅输出脱敏文本（图片处理）
     --help                  显示此帮助信息
 
 示例:
     python main.py contract.pdf
-    python main.py photo.jpg --method blur
     python main.py resume.docx --output-dir ./output
-    python main.py a.jpg b.pdf c.docx --output-dir ./desensitized
+    python main.py files.zip
+    python main.py a.pdf b.docx --output-dir ./desensitized
 """)
 
 
@@ -170,9 +160,7 @@ def parse_args(args: list) -> tuple:
     files = []
     kwargs = {
         'output_dir': None,
-        'method': 'black',
         'pdf_mode': 'auto',
-        'text_only': False,
     }
 
     i = 0
@@ -185,16 +173,10 @@ def parse_args(args: list) -> tuple:
             if i + 1 < len(args):
                 kwargs['output_dir'] = args[i + 1]
                 i += 1
-        elif arg == '--method':
-            if i + 1 < len(args):
-                kwargs['method'] = args[i + 1]
-                i += 1
         elif arg == '--pdf-mode':
             if i + 1 < len(args):
                 kwargs['pdf_mode'] = args[i + 1]
                 i += 1
-        elif arg == '--text-only':
-            kwargs['text_only'] = True
         elif not arg.startswith('--'):
             files.append(arg)
         i += 1

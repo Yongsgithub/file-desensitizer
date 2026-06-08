@@ -1,15 +1,20 @@
 #!/usr/bin/env python3
 """
 信息脱敏核心引擎
-支持对姓名、手机号、身份证号码、住址等敏感信息进行脱敏处理。
+支持对姓名、手机号、身份证号码、住址、户籍地址、11位数字（学号等）、出生年月、邮箱、
+银行卡号、邮政编码等敏感信息进行脱敏处理。
 
 脱敏策略：
 - 姓名：保留姓，名用*代替（如"张三"→"张*"，"张三丰"→"张**"）
 - 手机号：保留前3后4，中间用****代替（如"13812345678"→"138****5678"）
 - 身份证号：保留前6后4，中间用****代替（如"110101199001011234"→"110101********1234"）
 - 住址：保留省市/区，详细地址用****代替
+- 户籍地址：保留省市/区级，详细地址脱敏
+- 11位数字：保留首3末3位，中间用*****代替（如"16126450238"→"161*****238"）
+- 出生年月：保留年份，月份用**代替（如"2021年05月"→"2021年**月"）
 - 邮箱：保留首字符和@后域名，中间用***代替
 - 银行卡号：保留后4位，前面用****代替
+- 邮政编码：保留首2位，末4位用****代替（如"518000"→"51****"）
 """
 
 import re
@@ -45,6 +50,51 @@ class TextDesensitizer:
     # ── 银行卡号 ──
     BANKCARD_PATTERN = re.compile(r'(?<!\d)\d{12,19}(\d{4})(?!\d)')
     BANKCARD_REPLACE = r'****\1'
+
+    # ── 通用11位纯数字 ── 学号/考生号等无标签的11位数字
+    # 在手机号(1[3-9]开头)之后匹配，避免重复
+    GENERAL_11DIGIT_PATTERN = re.compile(r'(?<!\d)(\d{3})\d{5}(\d{3})(?!\d)')
+    GENERAL_11DIGIT_REPLACE = r'\1*****\2'
+
+    # ── 邮政编码（6位数字）──
+    POSTAL_CODE_LABEL = (
+        r'(?:邮\s*政\s*编\s*码|邮\s*编|邮政编码|邮编|'
+        r'post\s*code|zip\s*code|zip)'
+    )
+    # 带标签: 邮编：518000
+    POSTAL_CODE_LABELED_PATTERN = re.compile(
+        rf'{POSTAL_CODE_LABEL}'
+        r'[：:\s=]*'
+        r'(?P<code>\d{6})'
+        r'(?!\d)'
+    )
+    # 无标签纯6位数字（保守匹配，排除已脱敏文本中的数字片段）
+    POSTAL_CODE_STANDALONE = re.compile(
+        r'(?<!\d)(?<!\*)(\d{2})\d{4}(?![\d\*])'
+    )
+    POSTAL_CODE_STANDALONE_REPLACE = r'\1****'
+
+    # ── 出生年月 ── 匹配 "出生年月：2021年05月" 等格式，含 YYYY.MM.DD
+    BIRTH_DATE_PATTERN = re.compile(
+        r'(出\s*生\s*年\s*月|出\s*生\s*日\s*期|出\s*生\s*时\s*间)'
+        r'[：:\s=]*'
+        r'((?:19|20)\d{2})'
+        r'[\s年.\-/\u4e00-\u9fff]*'
+        r'(\d{1,2})'
+        r'[\s月.\-/\u4e00-\u9fff]*'
+        r'(\d{1,2})?'  # 可选日
+    )
+
+    # ── 户籍地址（带标签的高置信度地址）──
+    HOUSEHOLD_LABEL = (
+        r'(?:户\s*籍\s*地\s*址|户\s*籍\s*所\s*在\s*地|户\s*籍\s*所\s*在|'
+        r'户\s*口\s*所\s*在\s*地|户\s*籍\s*地)'
+    )
+    HOUSEHOLD_ADDRESS_PATTERN = re.compile(
+        rf'{HOUSEHOLD_LABEL}'
+        r'[：:\s=]*'
+        rf'([\u4e00-\u9fff\w\d\s\-\#\(\)（）、，,]{{4,200}})'
+    )
 
     # ── 住址相关模式 ──
     # 中国省份/直辖市/自治区
@@ -115,22 +165,45 @@ class TextDesensitizer:
         result = cls.ID_18_PATTERN.sub(cls.ID_18_REPLACE, result)
         result = cls.ID_15_PATTERN.sub(cls.ID_15_REPLACE, result)
 
-        # 2. 手机号
+        # 1.5 出生年月（身份证脱敏后处理，避免身份证中日期被误匹配）
+        result = cls._desensitize_birth_date(result, records, make_record)
+
+        # 2. 手机号（1[3-9]开头的11位数字）
         for match in cls.PHONE_PATTERN.finditer(result):
-            make_record("手机号", match.group(), cls.PHONE_PATTERN.sub(cls.PHONE_REPLACE, match.group()))
+            full = match.group()
+            masked = cls.PHONE_PATTERN.sub(cls.PHONE_REPLACE, full)
+            records.append({
+                "category": "手机号",
+                "original": full,
+                "masked": masked,
+                "search_text": full,  # 纯数字，PDF 中直接定位
+            })
         result = cls.PHONE_PATTERN.sub(cls.PHONE_REPLACE, result)
 
-        # 3. 银行卡号
+        # 2.5 通用11位数字（非手机号的11位纯数字，如学号16126450238）
+        result = cls._desensitize_11digit(result, records)
+
+        # 3. 邮政编码（带标签优先，再处理独立6位数字）
+        result = cls._desensitize_postal_code(result, records)
+
+        # 4. 银行卡号 (12-19位)
         for match in cls.BANKCARD_PATTERN.finditer(result):
-            make_record("银行卡号", match.group(), cls.BANKCARD_PATTERN.sub(cls.BANKCARD_REPLACE, match.group()))
+            full = match.group()
+            masked = cls.BANKCARD_PATTERN.sub(cls.BANKCARD_REPLACE, full)
+            records.append({
+                "category": "银行卡号",
+                "original": full,
+                "masked": masked,
+                "search_text": full,
+            })
         result = cls.BANKCARD_PATTERN.sub(cls.BANKCARD_REPLACE, result)
 
-        # 4. 邮箱
+        # 5. 邮箱
         for match in cls.EMAIL_PATTERN.finditer(result):
             make_record("邮箱", match.group(), cls.EMAIL_PATTERN.sub(cls.EMAIL_REPLACE, match.group()))
         result = cls.EMAIL_PATTERN.sub(cls.EMAIL_REPLACE, result)
 
-        # 5. 住址（使用已处理集合避免重复脱敏）
+        # 6. 住址 / 户籍地址（使用已处理集合避免重复脱敏）
         processed_positions = set()
 
         def safe_replace(text, start, end, replacement):
@@ -145,7 +218,28 @@ class TextDesensitizer:
             processed_positions.add(pos_key)
             return text[:start] + replacement + text[end:], True
 
-        # 合并所有地址匹配，按长度降序排列（长匹配优先）
+        # 6a. 户籍地址（带标签，高置信度，优先处理）
+        for match in cls.HOUSEHOLD_ADDRESS_PATTERN.finditer(result):
+            address_content = match.group(1).strip()
+            if len(address_content) >= 2:
+                masked_content = cls._mask_address(address_content)
+                full_original = match.group()
+                # 使用 match 的精确位置信息构造替换文本
+                content_start_in_full = match.start(1) - match.start()
+                prefix = full_original[:content_start_in_full]
+                masked_full = prefix + masked_content
+                new_result, replaced = safe_replace(result, match.start(), match.end(), masked_full)
+                if replaced:
+                    result = new_result
+                    # search_text 用地址内容（不含标签），便于 PDF 中定位
+                    records.append({
+                        "category": "户籍地址",
+                        "original": full_original,
+                        "masked": masked_full,
+                        "search_text": address_content,
+                    })
+
+        # 6b. 通用地址匹配：合并所有地址模式，按长度降序排列（长匹配优先）
         all_address_matches = []
 
         for pattern in [cls.ADDRESS_FULL_PATTERN, cls.ADDRESS_GENERAL_PATTERN, cls.ADDRESS_SHORT_PATTERN]:
@@ -162,7 +256,7 @@ class TextDesensitizer:
                 result = new_result
                 make_record("住址", original, masked)
 
-        # 6. 姓名（使用常见姓氏表 + 上下文推断）
+        # 7. 姓名（使用常见姓氏表 + 上下文推断）
         result = cls._desensitize_names(result, records)
 
         return result, records
@@ -195,6 +289,91 @@ class TextDesensitizer:
         elif len(address) > 4:
             return address[:2] + '****'
         return '****'
+
+    @classmethod
+    def _desensitize_birth_date(cls, text: str, records: List[Dict],
+                                 make_record) -> str:
+        """对出生年月进行脱敏：保留年份，月份用**代替"""
+        def birth_replacer(match):
+            label = match.group(1)       # "出生年月" 等
+            year = match.group(2)        # "2021"
+            month = match.group(3)       # "05"
+            day = match.group(4)         # 可选 "09"
+            full = match.group()
+            # 替换月份为 **
+            masked = full.replace(month, '**', 1)
+            # search_text 取完整日期值（不含标签），便于 PDF 中定位
+            search_text = year
+            # 从 full 中提取标签后的日期部分
+            label_end = full.find(year)
+            if label_end > 0:
+                search_text = full[label_end:]
+            records.append({
+                "category": "出生年月",
+                "original": full,
+                "masked": masked,
+                "search_text": search_text,
+            })
+            return masked
+
+        return cls.BIRTH_DATE_PATTERN.sub(birth_replacer, text)
+
+    @classmethod
+    def _desensitize_11digit(cls, text: str, records: List[Dict]) -> str:
+        """匹配并脱敏任意11位纯数字（非手机号，手机号已在前步处理）。
+        保留首3位和末3位，中间5位用*****代替。
+        search_text 为完整11位数字，便于 PDF 中精确定位。
+        """
+        def replacer(match):
+            full = match.group()
+            masked = match.group(1) + '*****' + match.group(2)
+            records.append({
+                "category": "11位数字(学号等)",
+                "original": full,
+                "masked": masked,
+                "search_text": full,
+            })
+            return masked
+        return cls.GENERAL_11DIGIT_PATTERN.sub(replacer, text)
+
+    @classmethod
+    def _desensitize_postal_code(cls, text: str, records: List[Dict]) -> str:
+        """匹配并脱敏邮政编码（6位数字）。
+        优先匹配带标签的（如 '邮编 518000'），再处理独立的6位数字。
+        保留首2位，末4位用****代替。
+        search_text 为完整6位数字，便于 PDF 中精确定位。
+        """
+        result = text
+
+        # 第一遍：带标签的邮政编码（高置信度）
+        def labeled_replacer(match):
+            full = match.group()
+            code = match.group('code')
+            masked_code = code[:2] + '****'
+            masked = full.replace(code, masked_code, 1)
+            records.append({
+                "category": "邮政编码",
+                "original": full,
+                "masked": masked,
+                "search_text": code,
+            })
+            return masked
+        result = cls.POSTAL_CODE_LABELED_PATTERN.sub(labeled_replacer, result)
+
+        # 第二遍：独立的6位数字（已处理过的邮政编码不会再匹配）
+        def standalone_replacer(match):
+            full = match.group()
+            masked = match.group(1) + '****'
+            records.append({
+                "category": "邮政编码",
+                "original": full,
+                "masked": masked,
+                "search_text": full,
+            })
+            return masked
+        result = cls.POSTAL_CODE_STANDALONE.sub(standalone_replacer, result)
+
+        return result
 
     @classmethod
     def _desensitize_names(cls, text: str, records: List[Dict]) -> str:
@@ -333,11 +512,20 @@ if __name__ == "__main__":
         "李四丰的邮箱是lisi@example.com，银行卡号6222021234567890123",
         "王五，联系电话：13987654321，住址：上海市浦东新区陆家嘴环路1000号恒生银行大厦",
         "赵六，身份证号：440305198506150078，电话15600001111",
+        # 学号+出生年月+户籍地址
+        "学号：20240100123，出生年月：2021年05月，户籍地址：广东省深圳市南山区科技园路88号",
+        "学籍号：G44030520050615，出生日期：2005年06月15日，户籍所在地：北京市海淀区中关村大街1号",
+        "考生号：24440101110001，出生时间：1998年12月，户口所在地：浙江省杭州市西湖区浙大路38号",
+        # 新增：纯11位数字 + 邮政编码
+        "学（籍）号 16126450238，邮政编码 518000，邮编：100081",
+        "学校中山职业技术学院 学（籍）号 16126450238 年级 23级 班别 23大数据班",
+        "出生年月 2004.10.09，身份证号 522401200513097020，户籍地址 海南省毕节市七星关区粤海街道大沙地村3组58号",
     ]
     for t in test_texts:
         result, records = desensitize_text(t)
         print(f"原文: {t}")
         print(f"脱敏: {result}")
         for r in records:
-            print(f"  [{r['category']}] {r['original']} → {r['masked']}")
+            s = r.get('search_text', '')
+            print(f"  [{r['category']}] {r['original'][:50]} → {r['masked'][:50]}  | search={s[:30]}")
         print()

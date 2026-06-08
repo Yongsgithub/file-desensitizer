@@ -1,13 +1,13 @@
 """
 文件信息脱敏工具 - File Desensitizer
 
-自动识别并遮盖图片、Word 文档、PDF 中的敏感信息：
-- 姓名、手机号、身份证号、住址、邮箱、银行卡号
+自动识别并遮盖 Word 文档、PDF、压缩包中的敏感信息：
+- 姓名、手机号、身份证号、住址、户籍地址、邮箱、银行卡号、学号、出生年月
 
 Usage:
     # CLI
     file-desensitizer document.pdf
-    file-desensitizer photo.jpg --method blur
+    file-desensitizer archive.zip
 
     # Python API
     from file_desensitizer import process_file

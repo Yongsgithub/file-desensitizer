@@ -28,20 +28,58 @@ def process_paragraph(paragraph, records: List[Dict]):
     """
     处理单个段落中的文本。
 
-    对于每个 run（文本片段），进行脱敏替换。
-    使用红色高亮标记脱敏后的文本。
-    """
-    for run in paragraph.runs:
-        original_text = run.text
-        if not original_text.strip():
-            continue
+    先将段落内所有 run 的文本拼接为完整文本，再进行脱敏替换。
+    这样可以处理跨 run 分布的敏感信息（如手机号、学号被 Word
+    拆分成多个 run 片段的情况）。
 
-        desensitized, run_records = TextDesensitizer.desensitize_text(original_text)
-        if desensitized != original_text:
-            run.text = desensitized
-            # 标记脱敏文本为红色
-            run.font.color.rgb = RGBColor(0xFF, 0x00, 0x00)
-            records.extend(run_records)
+    脱敏后将文本按 run 边界切分回各 run，并用红色高亮标记脱敏文本。
+
+    注意：当前所有脱敏模式均保持字符长度不变（身份证18→18、
+    手机号11→11、学号11→11、邮编6→6等），因此按原始 run 长度
+    切分不会产生偏移。
+    """
+    runs = paragraph.runs
+    if not runs:
+        return
+
+    # 收集所有 run 的文本和长度
+    run_texts = []
+    for run in runs:
+        run_texts.append(run.text)
+
+    full_text = ''.join(run_texts)
+    if not full_text.strip():
+        return
+
+    # 对全文进行脱敏
+    desensitized, run_records = TextDesensitizer.desensitize_text(full_text)
+    if desensitized == full_text:
+        return
+
+    records.extend(run_records)
+
+    if len(desensitized) == len(full_text):
+        # 快速路径：长度不变（手机号/学号/身份证/邮编/邮箱/出生年月/姓名
+        # 等所有数字型脱敏均保持长度不变），按原始 run 边界切分即可保持
+        # 各 run 的格式属性（字体、大小、加粗等）。
+        pos = 0
+        for i, run in enumerate(runs):
+            run_len = len(run_texts[i])
+            if run_len > 0:
+                new_text = desensitized[pos:pos + run_len]
+                if new_text != run_texts[i]:
+                    run.text = new_text
+                    run.font.color.rgb = RGBColor(0xFF, 0x00, 0x00)
+            pos += run_len
+    else:
+        # 长度变化路径（地址脱敏等会导致文本缩短）：
+        # 将所有 run 清空，用第一个 run 承载全文并标红。
+        # 这会丢失原有格式化，但保证脱敏结果正确。
+        for run in runs:
+            run.text = ''
+        if runs:
+            runs[0].text = desensitized
+            runs[0].font.color.rgb = RGBColor(0xFF, 0x00, 0x00)
 
 
 def process_table(table, records: List[Dict]):

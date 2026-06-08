@@ -33,6 +33,13 @@ from file_desensitizer.main import process_file, process_files, SUPPORTED_EXTENS
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, scrolledtext
 
+# 拖放支持（Windows/macOS/Linux）
+try:
+    from tkinterdnd2 import TkinterDnD, DND_FILES
+    TKDND_AVAILABLE = True
+except ImportError:
+    TKDND_AVAILABLE = False
+
 
 # ─── 样式常量 ─────────────────────────────────────────────────
 COLORS = {
@@ -116,7 +123,7 @@ class DesensitizerApp:
         ttk.Label(header_inner, text="🔒 文件信息脱敏工具", style="Title.TLabel").pack(anchor="w")
         ttk.Label(
             header_inner,
-            text="完全本地运行 · 数据不上云 · 支持图片 / Word / PDF",
+            text="完全本地运行 · 数据不上云 · 支持 Word / PDF / 压缩包",
             style="Subtitle.TLabel"
         ).pack(anchor="w", pady=(4, 0))
 
@@ -172,7 +179,7 @@ class DesensitizerApp:
 
         tk.Label(
             drop_inner,
-            text="支持: 图片 (.png .jpg .bmp .tiff .webp) ｜ Word (.docx) ｜ PDF (.pdf)",
+            text="支持: Word (.docx) ｜ PDF (.pdf) ｜ 压缩包 (.zip)",
             font=FONTS["small"],
             bg=COLORS["drop_zone"],
             fg=COLORS["text_secondary"],
@@ -187,6 +194,48 @@ class DesensitizerApp:
         # 悬停效果
         self.drop_frame.bind("<Enter>", lambda e: self._on_drop_enter())
         self.drop_frame.bind("<Leave>", lambda e: self._on_drop_leave())
+
+        # 注册拖放目标（tkinterdnd2）
+        if TKDND_AVAILABLE:
+            self.drop_frame.drop_target_register(DND_FILES)
+            self.drop_frame.dnd_bind('<<Drop>>', self._on_drop)
+            self.drop_frame.dnd_bind('<<DragEnter>>', lambda e: self._on_drop_enter())
+            self.drop_frame.dnd_bind('<<DragLeave>>', lambda e: self._on_drop_leave())
+
+    def _on_drop(self, event):
+        """处理拖放文件"""
+        files = self._parse_dropped_files(event.data)
+        if files:
+            self._add_files(files)
+        self._on_drop_leave()
+        return "break"
+
+    def _parse_dropped_files(self, data: str) -> List[str]:
+        """解析拖放事件返回的文件路径字符串
+
+        tkinterdnd2 返回格式示例：
+            Windows: "C:/file1.txt {C:/path with spaces/file2.txt}"
+            多文件用空格分隔，含空格路径用 {} 包裹
+        """
+        files = []
+        i = 0
+        while i < len(data):
+            if data[i] == '{':
+                end = data.find('}', i)
+                if end == -1:
+                    end = len(data)
+                files.append(data[i + 1:end])
+                i = end + 1
+            elif data[i] == ' ':
+                i += 1
+            else:
+                end = data.find(' ', i)
+                if end == -1:
+                    end = len(data)
+                files.append(data[i:end])
+                i = end + 1
+        # 统一路径分隔符并过滤空值
+        return [f.replace('/', os.sep) for f in files if f.strip()]
 
     def _on_drop_enter(self):
         self.drop_frame.configure(bg=COLORS["drop_zone_active"])
@@ -268,18 +317,6 @@ class DesensitizerApp:
             action_inner, text="⚙️ 操作",
             font=FONTS["subtitle"], bg=COLORS["card"], fg=COLORS["text"]
         ).pack(anchor="w", pady=(0, 10))
-
-        # 遮挡方式
-        method_frame = tk.Frame(action_inner, bg=COLORS["card"])
-        method_frame.pack(fill="x", pady=(0, 8))
-        tk.Label(method_frame, text="遮挡方式:", font=FONTS["body"], bg=COLORS["card"]).pack(side="left")
-        self.method_var = tk.StringVar(value="black")
-        for val, label in [("black", "黑色块"), ("blur", "模糊"), ("pixelate", "像素化")]:
-            tk.Radiobutton(
-                method_frame, text=label, variable=self.method_var, value=val,
-                font=FONTS["small"], bg=COLORS["card"], activebackground=COLORS["card"],
-                selectcolor=COLORS["card"],
-            ).pack(side="left", padx=(10, 0))
 
         # 输出目录
         out_frame = tk.Frame(action_inner, bg=COLORS["card"])
@@ -367,7 +404,7 @@ class DesensitizerApp:
         self.result_text.pack(fill="both", expand=True, padx=8, pady=(0, 8))
 
         # 初始提示
-        self._set_result_text("处理完成后，结果将显示在此处\n\n脱敏类型：姓名 · 手机号 · 身份证号 · 住址 · 邮箱 · 银行卡号")
+        self._set_result_text("处理完成后，结果将显示在此处\n\n脱敏类型：姓名 · 手机号 · 身份证号 · 住址 · 邮箱 · 银行卡号 · 学号 · 出生年月 · 户籍地址")
 
     def _build_status_bar(self):
         """底部状态栏"""
@@ -393,10 +430,10 @@ class DesensitizerApp:
     def _select_files(self):
         """选择文件对话框"""
         extensions = [
-            ("所有支持的文件", "*.png *.jpg *.jpeg *.bmp *.tiff *.webp *.docx *.pdf"),
-            ("图片文件", "*.png *.jpg *.jpeg *.bmp *.tiff *.webp"),
+            ("所有支持的文件", "*.docx *.pdf *.zip"),
             ("Word 文档", "*.docx"),
             ("PDF 文件", "*.pdf"),
+            ("压缩包", "*.zip"),
         ]
         files = filedialog.askopenfilenames(
             title="选择需要脱敏的文件",
@@ -439,7 +476,7 @@ class DesensitizerApp:
             for i, f in enumerate(self.files):
                 path = Path(f)
                 ext = path.suffix.lower()
-                icon = {"docx": "📝", "pdf": "📄"}.get(ext, "🖼️")
+                icon = {"docx": "📝", "pdf": "📄", "zip": "📦"}.get(ext, "📁")
 
                 row = tk.Frame(self.file_list_frame, bg=COLORS["card"])
                 row.pack(fill="x", padx=4, pady=1)
@@ -540,7 +577,6 @@ class DesensitizerApp:
                 result = process_file(
                     actual_file,
                     output_dir=self.output_dir,
-                    method=self.method_var.get(),
                 )
                 self.results.append(result)
                 if result.get("success"):
@@ -643,27 +679,13 @@ class DesensitizerApp:
             import importlib
             status_parts = []
 
-            # Tesseract
-            tesseract_ok = shutil.which("tesseract") is not None
-            if tesseract_ok:
-                try:
-                    langs = subprocess.check_output(
-                        ["tesseract", "--list-langs"], stderr=subprocess.STDOUT, text=True, timeout=10
-                    )
-                    chi_ok = "chi_sim" in langs
-                    status_parts.append("Tesseract ✅" if chi_ok else "Tesseract ⚠️ (缺中文包)")
-                except Exception:
-                    status_parts.append("Tesseract ✅")
-            else:
-                status_parts.append("Tesseract ❌ (图片脱敏不可用)")
-
-            # LibreOffice
+            # LibreOffice（.doc 转 .docx 需要）
             lo_ok = shutil.which("libreoffice") is not None
-            status_parts.append("LibreOffice ✅" if lo_ok else "LibreOffice ❌")
+            status_parts.append("LibreOffice ✅" if lo_ok else "LibreOffice ❌ (.doc支持)")
 
-            # Python 依赖
+            # Python 依赖（移除 image/Pillow/pytesseract 相关）
             deps_ok = True
-            for mod in ["PIL", "pytesseract", "fitz", "docx"]:
+            for mod in ["fitz", "docx"]:
                 try:
                     importlib.import_module(mod)
                 except ImportError:
@@ -680,7 +702,10 @@ class DesensitizerApp:
 
 # ─── 启动入口 ──────────────────────────────────────────────────
 def main():
-    root = tk.Tk()
+    if TKDND_AVAILABLE:
+        root = TkinterDnD.Tk()
+    else:
+        root = tk.Tk()
     app = DesensitizerApp(root)
     root.mainloop()
 

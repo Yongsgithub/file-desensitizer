@@ -30,8 +30,10 @@ def process_pdf_text_replace(
     input_file: Path
 ) -> Dict[str, Any]:
     """
-    文本替换模式：直接替换 PDF 中的文本。
-    使用 PyMuPDF 的文本搜索和标注功能。
+    文本替换模式：提取 PDF 文本 → 脱敏 → 直接遮盖敏感区域。
+
+    使用 PyMuPDF 的 get_text("dict") 获取字符级位置信息，
+    不依赖 search_for()，适应 PDF 表单中文字分散存储的情况。
     """
     result = {
         "success": True,
@@ -51,8 +53,8 @@ def process_pdf_text_replace(
     for page_num in range(len(doc)):
         page = doc[page_num]
 
-        # 提取页面文本
-        page_text = page.get_text("text")
+        # 提取页面文本和结构
+        page_text, span_map = _extract_page_text_with_positions(page)
         if not page_text.strip():
             continue
 
@@ -64,16 +66,23 @@ def process_pdf_text_replace(
 
         all_records.extend(records)
 
-        # 对每个敏感信息进行搜索和遮盖
+        # 对每个敏感信息的 search_text，在页面中定位并遮盖
         for record in records:
-            original = record['original']
-            # 搜索文本位置
-            text_instances = page.search_for(original)
+            search_text = record.get('search_text', record['original'])
+            rects = _locate_text_in_spans(search_text, page_text, span_map)
 
-            for inst in text_instances:
-                # 添加红色矩形遮盖
-                annot = page.add_redact_annot(inst, fill=(0, 0, 0))
-                total_redactions += 1
+            # search_for 作为后备（处理简单 PDF 仍有优势）
+            if not rects:
+                insts = page.search_for(search_text)
+                if insts:
+                    rects = insts
+
+            for rect in rects:
+                try:
+                    page.add_redact_annot(rect, fill=(0, 0, 0))
+                    total_redactions += 1
+                except Exception:
+                    pass
 
         # 应用遮盖
         if total_redactions > 0:
@@ -110,6 +119,86 @@ def process_pdf_text_replace(
     result["text_output_path"] = str(text_output_path)
 
     return result
+
+
+def _extract_page_text_with_positions(page) -> tuple:
+    """从页面提取文本和字符级位置映射。
+
+    返回:
+        (page_text, span_map)
+        page_text: 拼接后的完整文本
+        span_map: [(span_bbox, span_text, start_char, end_char), ...]
+    """
+    text_dict = page.get_text("dict")
+    spans = []
+    char_pos = 0
+
+    for block in text_dict.get("blocks", []):
+        if block.get("type") != 0:  # 跳过非文本块（图片等）
+            continue
+        for line in block.get("lines", []):
+            line_spans = []
+            for span in line.get("spans", []):
+                sp_text = span.get("text", "")
+                sp_bbox = span.get("bbox")
+                if sp_text and sp_bbox:
+                    line_spans.append((sp_bbox, sp_text))
+            # 同一行内的 span 连续拼接
+            for bbox, text in line_spans:
+                start = char_pos
+                end = char_pos + len(text)
+                spans.append((tuple(bbox), text, start, end))
+                char_pos += len(text)
+
+    # 拼接全部文本
+    full_text = "".join(s[1] for s in spans)
+    return full_text, spans
+
+
+def _locate_text_in_spans(search_text: str, page_text: str,
+                           span_map: list) -> list:
+    """在 span 映射中定位文本，返回覆盖该文本的所有矩形区域。
+
+    Args:
+        search_text: 要搜索的文本（纯数字等）
+        page_text: 完整页面文本
+        span_map: _extract_page_text_with_positions 返回的映射
+
+    Returns:
+        fitz.Rect 列表
+    """
+    if not search_text or not page_text:
+        return []
+
+    results = []
+    start = 0
+    search_len = len(search_text)
+
+    while start < len(page_text):
+        idx = page_text.find(search_text, start)
+        if idx == -1:
+            break
+
+        end_idx = idx + search_len
+
+        # 找到覆盖 [idx, end_idx) 的所有 span
+        matching_bboxes = []
+        for (bbox, sp_text, sp_start, sp_end) in span_map:
+            # span 是否与搜索范围有交集
+            if sp_end > idx and sp_start < end_idx:
+                matching_bboxes.append(bbox)
+
+        if matching_bboxes:
+            # 合并所有匹配的 bbox
+            x0 = min(b[0] for b in matching_bboxes)
+            y0 = min(b[1] for b in matching_bboxes)
+            x1 = max(b[2] for b in matching_bboxes)
+            y1 = max(b[3] for b in matching_bboxes)
+            results.append(fitz.Rect(x0, y0, x1, y1))
+
+        start = end_idx
+
+    return results
 
 
 def process_pdf_image_mode(
